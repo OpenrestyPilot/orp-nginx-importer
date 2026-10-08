@@ -1,25 +1,35 @@
-# ORP NGINX configuration importer
+# ORP NGINX 配置导入器
 
-Standalone Go API and Vue UI for retaining `nginx -T` output, previewing its conversion, and importing supported HTTP resources into ORP through the existing control-plane API.
+独立的 Go API 与 Vue 界面，用于保存 `nginx -T` 导出的配置、预览转换结果，并通过现有控制面 API 将支持的 HTTP 资源导入 ORP。
 
-## Run locally
+## 本地运行
 
 ```sh
 cd orp-nginx-importer/web && npm install
 cd .. && ./dev.sh
 ```
 
-Open http://localhost:8091. Vite proxies `/api` to Go on `:8090`; the Go server can also serve the production UI from `web/dist`. `NGINX_IMPORTER_ADDR` sets the Go listen address (default `:8090`). `NGINX_IMPORTER_STORAGE` selects the durable source/batch directory (default `./data`); `ORP_BACKEND_URL` points to ORP (default `http://127.0.0.1:8081`). Do not place the storage directory in a public web root.
+启动后访问 <http://localhost:8091>。Vite 会将 `/api` 请求代理到 `:8090`；Go 服务也可以直接提供 `web/dist` 中的生产版界面。
 
-## Workflow
+| 环境变量 | 用途 | 默认值 |
+| --- | --- | --- |
+| `NGINX_IMPORTER_ADDR` | Go 服务监听地址 | `:8090` |
+| `NGINX_IMPORTER_STORAGE` | 配置源文件与导入批次的持久化目录 | `./data` |
+| `ORP_BACKEND_URL` | ORP 控制面地址 | `http://127.0.0.1:8081` |
 
-1. Generate a dump with `nginx -T > nginx-T.txt` and upload it (32 MB maximum).
-2. The original bytes are stored under `data/sources/` and SHA-256 plus parsed preview are stored under `data/batches/`.
-3. Inspect resources and unsupported directives, then provide an ORP center UUID and authorized Bearer token to import supported HTTP upstreams, targets, servers, and simple locations.
-4. Review unsupported entries and imported resources in ORP before creating a release. Import does not publish, validate on nodes, reload, or restart.
+请勿将存储目录放在公开 Web 根目录下。
 
-## Current conversion boundary
+## 导入流程
 
-HTTP upstream `server` targets, weight/backup, HTTP `server_name`, listen port, simple `location`, `proxy_pass` references to named upstreams, `root`, `alias`, and `return` are mapped. Unknown directives are retained in the unsupported report with source file, line, and context. TLS listeners are reported for manual certificate mapping and imported without enabling TLS. Variables, complex location matching, upstream policies, includes that are absent from the dump, arbitrary modules, stream/mail blocks, and directive semantics beyond the listed mappings need manual work. The parser never executes NGINX commands or follows paths from the uploaded dump.
+1. 使用 `nginx -T > nginx-T.txt` 导出配置并上传，单个文件最大 32 MB。
+2. 原始文件保存在 `data/sources/`；SHA-256 摘要与解析预览保存在 `data/batches/`。
+3. 检查识别出的资源与不支持的指令，填写 ORP Center UUID 和有权限的 Bearer Token，将支持的 HTTP Upstream、目标、Server 与简单 Location 导入 ORP。
+4. 在 ORP 中复核导入资源和不支持项，再创建发布。导入操作不会发布配置、在节点上校验、重载或重启服务。
 
-The batch write uses ORP CRUD endpoints. A multi-request import is not transactional: if ORP rejects a later resource, earlier resources may already exist. Inspect the batch and ORP before retrying.
+## 配置转换范围
+
+当前支持映射 HTTP Upstream 的 `server` 目标及 `weight`/`backup`、HTTP `server_name`、监听端口、简单 `location`、引用具名 Upstream 的 `proxy_pass`、`root`、`alias` 和 `return`。未识别的指令会连同来源文件、行号和上下文保存在不支持项报告中。
+
+TLS 监听器会标记为需要手动映射证书，导入时不会启用 TLS。变量、复杂 Location 匹配、Upstream 策略、导出文件中缺失的 `include` 文件、任意模块、Stream/Mail 配置，以及上述映射范围以外的指令语义都需要人工处理。解析器不会执行 NGINX 命令，也不会访问上传配置中引用的路径。
+
+批量写入通过 ORP CRUD 接口完成，多个请求不是一个事务。如果 ORP 在后续请求中拒绝资源，之前成功写入的资源可能已经存在；重试前请检查导入批次和 ORP 中的资源。
