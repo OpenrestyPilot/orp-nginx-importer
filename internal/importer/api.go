@@ -3,6 +3,7 @@ package importer
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -70,8 +71,9 @@ func serveCollectorScript(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "collector script unavailable", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
-	w.Header().Set("Content-Disposition", `inline; filename="send_nginx_config_script.sh"`)
+	encoded := base64.StdEncoding.EncodeToString(body) + "\n"
+	w.Header().Set("Content-Type", "text/plain; charset=us-ascii")
+	w.Header().Set("Content-Disposition", `inline; filename="send_nginx_config_script.sh.b64"`)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if r.Method == http.MethodHead {
@@ -79,7 +81,7 @@ func serveCollectorScript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(body)
+	_, _ = io.WriteString(w, encoded)
 }
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -1,10 +1,14 @@
 package importer
 
 import (
+	"encoding/base64"
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/OpenrestyPlus/orp-nginx-importer/scripts"
 )
 
 func TestCollectorScriptEndpoint(t *testing.T) {
@@ -18,11 +22,19 @@ func TestCollectorScriptEndpoint(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", res.Code)
 	}
-	if !strings.Contains(res.Header().Get("Content-Type"), "text/x-shellscript") {
+	if !strings.Contains(res.Header().Get("Content-Type"), "text/plain") {
 		t.Fatalf("unexpected content type: %s", res.Header().Get("Content-Type"))
 	}
-	if !strings.Contains(res.Body.String(), "NGINX_CONFIG_API_BASE_URL") || !strings.Contains(res.Body.String(), "docker ps -q") {
-		t.Fatal("served file does not contain the configured collector script")
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(res.Body.String()))
+	if err != nil {
+		t.Fatalf("response is not valid base64: %v", err)
+	}
+	original, err := fs.ReadFile(scripts.Files, "send_nginx_config_script.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded) != string(original) {
+		t.Fatal("base64 response does not decode to the embedded collector script")
 	}
 }
 
