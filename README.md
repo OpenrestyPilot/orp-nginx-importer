@@ -19,6 +19,10 @@ cd .. && ./dev.sh
 
 请勿将存储目录放在公开 Web 根目录下。
 
+## 主机采集脚本
+
+页面提供 curl 与 wget 两种可复制命令，分别通过 `/scripts/send_nginx_config_script.sh` 获取脚本并交给 Bash 执行。Go 服务将 [采集脚本](scripts/send_nginx_config_script.sh) 嵌入程序，无需额外挂载静态文件。脚本扫描主机 NGINX master 进程和运行中的 Docker 容器，并上传配置到脚本中的 API 地址（可用 `NGINX_CONFIG_API_BASE_URL` 覆盖，默认是脚本内的测试地址）。执行前请检查脚本内容，并确认目标主机的进程读取和 Docker 权限。
+
 ## 导入流程
 
 1. 使用 `nginx -T > nginx-T.txt` 导出配置并上传，单个文件最大 32 MB。

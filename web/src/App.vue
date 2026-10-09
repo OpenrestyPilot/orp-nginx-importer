@@ -1,6 +1,9 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
-const batches=ref([]), selected=ref(null), file=ref(null), loading=ref(false), error=ref(''), center=ref(''), token=ref(''), result=ref('');
+const batches=ref([]), selected=ref(null), file=ref(null), loading=ref(false), error=ref(''), center=ref(''), token=ref(''), result=ref(''), copied=ref('');
+const scriptURL=`${window.location.origin}/scripts/send_nginx_config_script.sh`;
+const curlCommand=`curl -fsSL '${scriptURL}' | bash`;
+const wgetCommand=`wget -qO- '${scriptURL}' | bash`;
 const api=async(path,options={})=>{const r=await fetch(path,options);if(!r.ok)throw new Error(await r.text());return r.json()};
 async function refresh(){batches.value=await api('/api/batches');if(selected.value)selected.value=await api(`/api/batches/${selected.value.id}`)}
 onMounted(()=>refresh().catch(e=>error.value=e.message));
@@ -8,8 +11,10 @@ async function upload(){if(!file.value)return;loading.value=true;error.value='';
 async function importBatch(){if(!selected.value)return;loading.value=true;error.value='';result.value='';try{const value=await api(`/api/batches/${selected.value.id}/import`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({centerId:center.value,token:token.value})});selected.value=value.batch;result.value=value.message;await refresh()}catch(e){error.value=e.message}finally{loading.value=false}}
 const unsupported=computed(()=>selected.value?.preview?.unsupported||[]);
 function choose(e){file.value=e.target.files?.[0]||null}
+async function copyCommand(kind,command){try{await navigator.clipboard.writeText(command);copied.value=kind;setTimeout(()=>copied.value='',1800)}catch{error.value='复制失败，请手动选择并复制命令。'}}
 </script>
 <template><main><header><div><div class="eyebrow">ORP MIGRATION WORKSPACE</div><h1>NGINX 配置迁移</h1><p>上传 <code>nginx -T</code> 输出，查看转换结果，再导入 ORP 配置中心。</p></div><div class="pill">原文留档 · 可追溯</div></header>
+<section class="collector card"><div class="collector-heading"><div><span class="tag">HOST COLLECTOR</span><h2>在 NGINX 主机上快速采集</h2><p>命令会从本服务获取采集脚本并立即执行。脚本扫描主机及可访问的 Docker 容器。</p></div><a class="script-link" :href="scriptURL">查看脚本 ↗</a></div><div class="command-row"><span class="command-label">curl</span><code>{{curlCommand}}</code><button class="copy-button" @click="copyCommand('curl',curlCommand)">{{copied==='curl'?'已复制':'复制命令'}}</button></div><div class="command-row"><span class="command-label">wget</span><code>{{wgetCommand}}</code><button class="copy-button" @click="copyCommand('wget',wgetCommand)">{{copied==='wget'?'已复制':'复制命令'}}</button></div><p class="collector-footnote">执行需要目标主机能读取 NGINX 进程信息，并具备所需的 Docker 权限。脚本默认向其配置的上传 API 地址发送采集结果。</p></section>
 <section class="upload card"><div><h2>新建迁移批次</h2><p>支持带有配置文件标记的 nginx -T 文本，最大 32 MB。</p></div><label class="file"><input type="file" accept=".txt,.conf,text/plain" @change="choose"><span>{{file?.name||'选择 nginx -T 输出文件'}}</span></label><button class="primary" :disabled="!file||loading" @click="upload">{{loading?'正在解析…':'上传并预览'}}</button></section>
 <div v-if="error" class="notice error">{{error}}</div><div v-if="result" class="notice success">{{result}}</div>
 <div class="layout"><aside class="card"><div class="section-title"><h2>迁移批次</h2><button class="quiet" @click="refresh">刷新</button></div><button v-for="b in batches" :key="b.id" class="batch" :class="{active:selected?.id===b.id}" @click="selected=b"><b>{{b.name}}</b><small>{{new Date(b.uploadedAt).toLocaleString()}}</small><small>{{b.preview?.servers?.length||0}} 个 Server · {{b.preview?.unsupported?.length||0}} 项待处理</small></button><p v-if="!batches.length" class="empty">上传文件后，迁移批次会显示在这里。</p></aside>

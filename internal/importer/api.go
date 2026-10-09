@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OpenrestyPlus/orp-nginx-importer/scripts"
 	"github.com/google/uuid"
 )
 
@@ -54,8 +55,31 @@ func (a *API) Handler() http.Handler {
 	m.HandleFunc("POST /api/batches", a.upload)
 	m.HandleFunc("GET /api/batches/{id}", a.get)
 	m.HandleFunc("POST /api/batches/{id}/import", a.importBatch)
+	m.HandleFunc("/scripts/send_nginx_config_script.sh", serveCollectorScript)
 	m.Handle("/", http.FileServer(http.Dir("web/dist")))
 	return cors(m)
+}
+
+func serveCollectorScript(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := scripts.Files.ReadFile("send_nginx_config_script.sh")
+	if err != nil {
+		http.Error(w, "collector script unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/x-shellscript; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="send_nginx_config_script.sh"`)
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
 }
 func cors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
