@@ -1,0 +1,65 @@
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "beta"'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-beta\.\d+)?$/'
+    - when: never
+
+stages:
+  - build
+  - release
+
+variables:
+  DOCKER_HOST: tcp://docker:2376
+  DOCKER_TLS_CERTDIR: /certs
+  DOCKER_TLS_VERIFY: "1"
+  DOCKER_CERT_PATH: /certs/client
+
+build-image:
+  stage: build
+  image: docker:27.4.1-cli
+  services:
+    - name: docker:27.4.1-dind
+      alias: docker
+  before_script:
+    - |
+      for attempt in $(seq 1 30); do
+        docker info >/dev/null 2>&1 && break
+        sleep 1
+      done
+      docker info
+    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    - docker build --pull -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
+    - |
+      image=$CI_REGISTRY_IMAGE
+      docker push "$image:$CI_COMMIT_SHA"
+      if [ -n "${CI_COMMIT_TAG:-}" ]; then
+        docker tag "$image:$CI_COMMIT_SHA" "$image:$CI_COMMIT_TAG"
+        docker push "$image:$CI_COMMIT_TAG"
+        case "$CI_COMMIT_TAG" in
+          *-beta.*) docker tag "$image:$CI_COMMIT_SHA" "$image:beta"; docker push "$image:beta" ;;
+          *) docker tag "$image:$CI_COMMIT_SHA" "$image:latest"; docker push "$image:latest" ;;
+        esac
+      elif [ "${CI_COMMIT_BRANCH:-}" = "beta" ]; then
+        docker tag "$image:$CI_COMMIT_SHA" "$image:beta"
+        docker tag "$image:$CI_COMMIT_SHA" "$image:beta-$CI_COMMIT_SHORT_SHA"
+        docker push "$image:beta"
+        docker push "$image:beta-$CI_COMMIT_SHORT_SHA"
+      fi
+
+release:
+  stage: release
+  image: registry.gitlab.com/gitlab-org/cli:latest
+  needs: [build-image]
+  script:
+    - echo "Publishing $CI_COMMIT_TAG image from $CI_REGISTRY_IMAGE"
+  release:
+    tag_name: "$CI_COMMIT_TAG"
+    name: "OpenResty Plus NGINX Importer $CI_COMMIT_TAG"
+    description: "Container image: $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
+    assets:
+      links:
+        - name: NGINX importer container image
+          url: "$CI_PROJECT_URL/container_registry"
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+(-beta\.\d+)?$/'
