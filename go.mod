@@ -1,4 +1,4 @@
-module github.com/OpenrestyPlus/orp-nginx-importer
+module github.com/ORP/orp-nginx-importer
 
 go 1.26.1
 

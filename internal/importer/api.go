@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/OpenrestyPlus/orp-nginx-importer/scripts"
+	"github.com/ORP/orp-nginx-importer/scripts"
 	"github.com/google/uuid"
 )
 

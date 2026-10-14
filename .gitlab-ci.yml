@@ -55,7 +55,7 @@ release:
     - echo "Publishing $CI_COMMIT_TAG image from $CI_REGISTRY_IMAGE"
   release:
     tag_name: "$CI_COMMIT_TAG"
-    name: "OpenResty Plus NGINX Importer $CI_COMMIT_TAG"
+    name: "ORP NGINX Importer $CI_COMMIT_TAG"
     description: "Container image: $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
     assets:
       links:

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/OpenrestyPlus/orp-nginx-importer/internal/importer"
+	"github.com/ORP/orp-nginx-importer/internal/importer"
 )
 
 func main() {
