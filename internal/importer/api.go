@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/ORP/orp-nginx-importer/scripts"
@@ -169,7 +170,77 @@ func (a *API) persist(b Batch) error {
 	if e != nil {
 		return e
 	}
-	return os.WriteFile(filepath.Join(a.dir, "batches", b.ID+".json"), raw, 0600)
+	path := filepath.Join(a.dir, "batches", b.ID+".json")
+	tmp, e := os.CreateTemp(filepath.Dir(path), ".batch-*.tmp")
+	if e != nil {
+		return e
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, e = tmp.Write(raw); e != nil {
+		_ = tmp.Close()
+		return e
+	}
+	if e = tmp.Sync(); e != nil {
+		_ = tmp.Close()
+		return e
+	}
+	if e = tmp.Close(); e != nil {
+		return e
+	}
+	if e = os.Rename(tmpName, path); e != nil {
+		return e
+	}
+	directory, e := os.Open(filepath.Dir(path))
+	if e != nil {
+		return e
+	}
+	defer directory.Close()
+	return directory.Sync()
+}
+
+// reserveImport serializes reservation across importer processes sharing the
+// same state directory, then reloads the durable record so stale in-memory
+// state cannot allow the same batch to be imported twice.
+func (a *API) reserveImport(id, centerID string) (Batch, error) {
+	lockPath := filepath.Join(a.dir, "batches", ".import-reservation.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return Batch{}, err
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return Batch{}, fmt.Errorf("another import reservation is in progress")
+	}
+	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+
+	path := filepath.Join(a.dir, "batches", id+".json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return Batch{}, err
+	}
+	var batch Batch
+	if err := json.Unmarshal(raw, &batch); err != nil {
+		return Batch{}, err
+	}
+	if batch.ID != id || batch.Preview == nil {
+		return Batch{}, fmt.Errorf("batch record is incomplete or does not match its identifier")
+	}
+	if batch.ImportedAt != nil || batch.ImportCenter != "" {
+		return Batch{}, fmt.Errorf("batch import is already in progress or previously attempted; inspect ORP before retrying")
+	}
+	batch.ImportCenter = centerID
+	if err := a.persist(batch); err != nil {
+		return Batch{}, err
+	}
+	a.mu.Lock()
+	a.batches[id] = batch
+	a.mu.Unlock()
+	return batch, nil
 }
 func write(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -214,8 +285,9 @@ func (c *orpClient) request(method, path string, body any, out any) error {
 func (a *API) importBatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var input struct {
-		CenterID string `json:"centerId"`
-		Token    string `json:"token"`
+		CenterID               string `json:"centerId"`
+		Token                  string `json:"token"`
+		AcknowledgeUnsupported bool   `json:"acknowledgeUnsupported"`
 	}
 	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input) != nil || input.Token == "" {
 		http.Error(w, "centerId and ORP bearer token are required", 400)
@@ -223,6 +295,14 @@ func (a *API) importBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if _, e := uuid.Parse(input.CenterID); e != nil {
 		http.Error(w, "centerId must be a UUID", 400)
+		return
+	}
+	base := a.orpURL
+	if base == "" {
+		base = os.Getenv("ORP_BACKEND_URL")
+	}
+	if base == "" {
+		http.Error(w, "ORP_BACKEND_URL is not configured", 503)
 		return
 	}
 	a.mu.Lock()
@@ -240,25 +320,38 @@ func (a *API) importBatch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "a previous import attempt partially created ORP resources; inspect ORP before retrying", 409)
 		return
 	}
-	base := a.orpURL
-	if base == "" {
-		base = os.Getenv("ORP_BACKEND_URL")
+	for _, server := range b.Preview.Servers {
+		if server.TLS {
+			http.Error(w, "TLS listeners cannot be imported as plain HTTP servers; map certificates and TLS policies manually first", 422)
+			return
+		}
 	}
-	if base == "" {
-		http.Error(w, "ORP_BACKEND_URL is not configured", 503)
+	if len(b.Preview.Unsupported) > 0 && !input.AcknowledgeUnsupported {
+		http.Error(w, "preview contains unsupported or incomplete configuration; explicitly acknowledge the omissions before import", 422)
 		return
+	}
+	previewUpstreams := make(map[string]struct{}, len(b.Preview.Upstreams))
+	for _, upstream := range b.Preview.Upstreams {
+		previewUpstreams[upstream.Name] = struct{}{}
+	}
+	for _, server := range b.Preview.Servers {
+		for _, location := range server.Locations {
+			if location.ProxyPass == "" {
+				continue
+			}
+			name := proxyUpstream(location.ProxyPass)
+			if name == "" {
+				http.Error(w, "unsupported proxy_pass target cannot be mapped to a fixed ORP upstream: "+location.ProxyPass, 422)
+				return
+			}
+			if _, ok := previewUpstreams[name]; !ok {
+				http.Error(w, "proxy_pass upstream is not present in imported HTTP upstreams: "+location.ProxyPass, 422)
+				return
+			}
+		}
 	}
 	c := &orpClient{base: strings.TrimRight(base, "/"), token: input.Token, client: &http.Client{Timeout: 20 * time.Second}}
 	path := "/api/centers/" + url.PathEscape(input.CenterID)
-	b.ImportCenter = input.CenterID
-	a.mu.Lock()
-	a.batches[id] = b
-	err := a.persist(b)
-	a.mu.Unlock()
-	if err != nil {
-		http.Error(w, err.Error(), 500)
-		return
-	}
 	upstreamIDs := map[string]string{}
 	upstreamNames := map[string]bool{}
 	var existing []struct {
@@ -267,6 +360,20 @@ func (a *API) importBatch(w http.ResponseWriter, r *http.Request) {
 	}
 	if e := c.request("GET", path+"/http/upstreams", nil, &existing); e != nil {
 		http.Error(w, e.Error(), 502)
+		return
+	}
+	// Persist the reservation immediately before the first possible write.
+	// The file lock also coordinates separate importer processes sharing this
+	// state directory; read-only failures remain retryable.
+	b, err := a.reserveImport(id, input.CenterID)
+	if err != nil {
+		status := http.StatusConflict
+		if os.IsNotExist(err) {
+			status = http.StatusNotFound
+		} else if !strings.Contains(err.Error(), "already in progress") && !strings.Contains(err.Error(), "reservation is in progress") {
+			status = http.StatusInternalServerError
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	for _, u := range existing {
